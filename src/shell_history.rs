@@ -21,24 +21,20 @@ fn read_ignoring_utf_errors(path: &Path) -> String {
     String::from_utf8_lossy(&buffer).to_string()
 }
 
-fn read_zsh_history(path: &Path) -> String {
+// Zsh uses a meta char (0x83) to signify that the previous character should be ^ 32.
+fn read_and_unmetafy(path: &Path) -> String {
     let mut f =
         File::open(path).unwrap_or_else(|_| panic!("McFly error: {:?} file not found", &path));
     let mut buffer = Vec::new();
     f.read_to_end(&mut buffer)
         .unwrap_or_else(|_| panic!("McFly error: Unable to read from {:?}", &path));
-
-    // Zsh uses a meta char (0x83) to signify that the previous character should be ^ 32.
     for index in (0..buffer.len()).rev() {
         if buffer[index] == 0x83 {
             buffer.remove(index);
             buffer[index] ^= 32;
         }
     }
-    String::from_utf8_lossy(&buffer)
-        .to_string()
-        // Replace backslash+backslash+newline with empty string to join multiline commands
-        .replace("\\\\\n", "")
+    String::from_utf8_lossy(&buffer).to_string()
 }
 
 #[allow(clippy::if_same_then_else)]
@@ -132,18 +128,44 @@ pub fn full_history(path: &Path, history_format: HistoryFormat) -> Vec<HistoryCo
                 .collect()
         }
         HistoryFormat::Zsh { .. } => {
-            let history_contents = read_zsh_history(path);
-            let zsh_timestamp_and_duration_regex = Regex::new(r"^: [0-9]+:[0-9]+;").unwrap();
+            let history_contents = read_and_unmetafy(path);
+            let mut commands = Vec::new();
+            let mut line = String::new();
             let when = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_else(|err| panic!("McFly error: Time went backwards ({err})"))
                 .as_secs() as i64;
-            history_contents
-                .split('\n')
-                .filter(|line| !has_leading_timestamp(line) && !line.is_empty())
-                .map(|line| zsh_timestamp_and_duration_regex.replace(line, ""))
-                .map(|line| HistoryCommand::new(line, when, history_format))
-                .collect()
+
+            for s in history_contents.split('\n') {
+                if let Some(s) = s.strip_suffix('\\') {
+                    line.push_str(s);
+                    line.push_str("\\\n");
+                } else {
+                    line.push_str(&s);
+                    let command = std::mem::take(&mut line);
+
+                    if let Some(command) = command.strip_prefix(": ") {
+                        let (time, duration) = command.split_once(':').unwrap();
+                        let (duration, command) = duration.split_once(';').unwrap();
+
+                        let time = time.parse::<i64>().ok().unwrap();
+
+                        commands.push(HistoryCommand::new(
+                            command.trim_end().to_string(),
+                            time,
+                            history_format,
+                        ));
+                    } else {
+                        commands.push(HistoryCommand::new(
+                            command.trim_end().to_string(),
+                            when,
+                            history_format,
+                        ));
+                    }
+                }
+            }
+
+            commands
         }
         HistoryFormat::Fish => {
             // Fish history format is not technically YAML.  This is a naive parser of the format,
