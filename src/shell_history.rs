@@ -21,20 +21,24 @@ fn read_ignoring_utf_errors(path: &Path) -> String {
     String::from_utf8_lossy(&buffer).to_string()
 }
 
-// Zsh uses a meta char (0x83) to signify that the previous character should be ^ 32.
-fn read_and_unmetafy(path: &Path) -> String {
+fn read_zsh_history(path: &Path) -> String {
     let mut f =
         File::open(path).unwrap_or_else(|_| panic!("McFly error: {:?} file not found", &path));
     let mut buffer = Vec::new();
     f.read_to_end(&mut buffer)
         .unwrap_or_else(|_| panic!("McFly error: Unable to read from {:?}", &path));
+
+    // Zsh uses a meta char (0x83) to signify that the previous character should be ^ 32.
     for index in (0..buffer.len()).rev() {
         if buffer[index] == 0x83 {
             buffer.remove(index);
             buffer[index] ^= 32;
         }
     }
-    String::from_utf8_lossy(&buffer).to_string()
+    String::from_utf8_lossy(&buffer)
+        .to_string()
+        // Replace backslash+backslash+newline with empty string to join multiline commands
+        .replace("\\\\\n", "")
 }
 
 #[allow(clippy::if_same_then_else)]
@@ -128,7 +132,7 @@ pub fn full_history(path: &Path, history_format: HistoryFormat) -> Vec<HistoryCo
                 .collect()
         }
         HistoryFormat::Zsh { .. } => {
-            let history_contents = read_and_unmetafy(path);
+            let history_contents = read_zsh_history(path);
             let zsh_timestamp_and_duration_regex = Regex::new(r"^: [0-9]+:[0-9]+;").unwrap();
             let when = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
